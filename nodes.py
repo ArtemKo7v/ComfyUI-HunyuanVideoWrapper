@@ -2,6 +2,11 @@ import os
 import torch
 import json
 import gc
+import hashlib
+import pickle
+import re
+import random
+
 from .utils import log, print_memory
 from diffusers.video_processor import VideoProcessor
 from typing import List, Dict, Any, Tuple
@@ -774,10 +779,11 @@ class HyVideoTextEncode:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
-            "text_encoders": ("HYVIDTEXTENCODER",),
             "prompt": ("STRING", {"default": "", "multiline": True} ),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff})
             },
             "optional": {
+                "text_encoders": ("HYVIDTEXTENCODER",),
                 "force_offload": ("BOOLEAN", {"default": True}),
                 "prompt_template": (["video", "image", "custom", "disabled"], {"default": "video", "tooltip": "Use the default prompt templates for the llm text encoder"}),
                 "custom_prompt_template": ("PROMPT_TEMPLATE", {"default": PROMPT_TEMPLATE["dit-llm-encode-video"], "multiline": True}),
@@ -791,7 +797,40 @@ class HyVideoTextEncode:
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
 
-    def process(self, text_encoders, prompt, force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
+    # This is a simple cache for the text encoder embeddings, it uses pickle so it is not safe to use.
+    # Later I will use HyVideoTextEmbedsLoad / HyVideoTextEmbedsSave to save and load the embeddings as safetensors.
+    CACHE_DIR = os.path.join(script_directory, "cache_encoder")
+
+    def __init__(self):
+        os.makedirs(self.CACHE_DIR, exist_ok=True)
+
+    def get_cache_path(self, prompt):
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache")
+
+    # Support for dynamic prompts with {a|b|c} syntax
+    def expand_dynamic_prompt(self, prompt, seed):
+        pattern = re.compile(r"\{([^{}]+)\}")
+        def replace(match):
+            return random.choice(match.group(1).split("|"))
+        prompt = re.sub(pattern, replace, prompt)
+        prompt = re.sub(r"\s+", " ", prompt).strip()
+        return prompt
+
+    def process(self, text_encoders=None, prompt="", seed=0, force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
+        random.seed(seed)
+        prompt = self.expand_dynamic_prompt(prompt, seed)
+        cache_path = self.get_cache_path(prompt)
+        txt_path = f"{cache_path}.txt"
+
+        # Check if cache exists
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                return (pickle.load(f),)
+
+        if text_encoders is None:
+            raise ValueError("text_encoders is required if cache is not available.")
+
         if clip_text_override is not None and len(clip_text_override) == 0:
             clip_text_override = None
         device = mm.text_encoder_device()
@@ -962,6 +1001,15 @@ class HyVideoTextEncode:
                 "start_percent": torch.tensor(hyvid_cfg["start_percent"]) if hyvid_cfg is not None else None,
                 "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
             }
+
+        # Save to cache
+        with open(cache_path, "wb") as f:
+            pickle.dump(prompt_embeds_dict, f)
+
+        # Save prompt to txt file
+        with open(txt_path, "w") as f:
+            f.write(prompt)
+
         return (prompt_embeds_dict,)
 
 class HyVideoTextImageEncode(HyVideoTextEncode):
