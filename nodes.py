@@ -1582,6 +1582,100 @@ class HyVideoLatentPreview:
 
         return (latent_images.float().cpu(), out_factors)
 
+class HyVideoLoadRandomCachedPrompt:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "seed": ("INT", {"default": 0, "min": 0, "max": 9999999, "tooltip": "Random seed for reproducibility"})
+            }
+        }
+
+    OUTPUT_NODE = True
+    RETURN_TYPES = ("HYVIDEMBEDS", "STRING", "STRING")
+    RETURN_NAMES = ("hyvid_embeds", "cache_filename", "prompt_text")
+    FUNCTION = "process"
+    CATEGORY = "HunyuanVideoWrapper"
+    DISPLAY_NAME = "HyVideo Load Random Cached Prompt"
+
+    CACHE_DIR = os.path.join(script_directory, "cache_encoder")
+
+    def __init__(self):
+        os.makedirs(self.CACHE_DIR, exist_ok=True)
+        self.selected_cache = ""
+        self.prompt_text = ""
+
+    def get_cache_path(self, prompt):
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache")
+
+    def process(self, seed=0):
+        random.seed(seed)
+        cache_files = [f for f in os.listdir(self.CACHE_DIR) if f.endswith(".cache")]
+
+        if not cache_files:
+            raise ValueError("No cached prompt embeddings found.")
+
+        self.selected_cache = random.choice(cache_files)
+        cache_path = os.path.join(self.CACHE_DIR, self.selected_cache)
+        txt_path = cache_path.replace(".cache", ".cache.txt")
+
+        with open(cache_path, "rb") as f:
+            prompt_embeds_dict = pickle.load(f)
+
+        self.prompt_text = ""
+        if os.path.exists(txt_path):
+            with open(txt_path, "r") as f:
+                self.prompt_text = f.read().strip()
+
+        print('text', self.prompt_text)
+        return (prompt_embeds_dict, self.selected_cache, self.prompt_text)
+
+class HyVideoModifyPromptEmbeds:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "hyvid_embeds": ("HYVIDEMBEDS",),
+            "modification_strength": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "tooltip": "Percentage of random modification to apply"}),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 9999999, "tooltip": "Random seed for reproducibility"})
+            }
+        }
+
+    RETURN_TYPES = ("HYVIDEMBEDS", )
+    RETURN_NAMES = ("modified_hyvid_embeds",)
+    FUNCTION = "process"
+    CATEGORY = "HunyuanVideoWrapper"
+    DISPLAY_NAME = "HyVideo Modify Prompt Embeds"
+
+    def process(self, hyvid_embeds, modification_strength=0.0, seed=0):
+        random.seed(seed)
+        if modification_strength == 0.0:
+            return (hyvid_embeds,)
+        modified_embeds = {}
+        for key, tensor in hyvid_embeds.items():
+            # Check if tensor is None or not a tensor
+            if tensor is None or not isinstance(tensor, torch.Tensor):
+                print(f"Warning: Invalid tensor {key} - skipped")
+                modified_embeds[key] = tensor
+                continue
+
+            # Generate random noise
+            try:
+                noise = torch.randn_like(tensor.float()) * (modification_strength/100)
+            except Exception as e:
+                print(f"Error processing {key}: {str(e)}")
+                noise = 0
+
+            # attention mask modification
+            if "attention_mask" in key:
+                modified = tensor.float() + noise
+                modified = torch.clamp(modified, 0, 1).round().to(torch.int64)
+            else:
+                modified = tensor + noise.to(tensor.dtype) if tensor.is_floating_point() else tensor
+
+            modified_embeds[key] = modified
+
+        return (modified_embeds,)
+
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
     "HyVideoDecode": HyVideoDecode,
@@ -1604,6 +1698,8 @@ NODE_CLASS_MAPPINGS = {
     "HyVideoContextOptions": HyVideoContextOptions,
     "HyVideoEnhanceAVideo": HyVideoEnhanceAVideo,
     "HyVideoTeaCache": HyVideoTeaCache,
+    "HyVideoLoadRandomCachedPrompt": HyVideoLoadRandomCachedPrompt,
+    "HyVideoModifyPromptEmbeds": HyVideoModifyPromptEmbeds
     }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoSampler": "HunyuanVideo Sampler",
@@ -1627,4 +1723,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoContextOptions": "HunyuanVideo Context Options",
     "HyVideoEnhanceAVideo": "HunyuanVideo Enhance A Video",
     "HyVideoTeaCache": "HunyuanVideo TeaCache",
+    "HyVideoLoadRandomCachedPrompt": "HunyuanVideo Load Random Cached Prompt",
+    "HyVideoModifyPromptEmbeds": "HunyuanVideo Modify Prompt Embed"
     }
