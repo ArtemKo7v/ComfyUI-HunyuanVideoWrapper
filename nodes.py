@@ -812,13 +812,40 @@ class HyVideoTextEncode:
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.gz"), os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.txt")        
 
-    # Support for dynamic prompts with {a|b|c} syntax
+    # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt, seed):
-        pattern = re.compile(r"\{([^{}]+)\}")
-        def replace(match):
-            return random.choice(match.group(1).split("|"))
-        prompt = re.sub(pattern, replace, prompt)
+        import random
+        import re
+        
+        variables = {}
+        
+        # Replace variable declarations {var=opt1|opt2|...}
+        var_decl_pattern = re.compile(r"\{\s*(\w+)\s*=\s*([^{}]+)\}")
+        def replace_var_decl(match):
+            var_name = match.group(1).strip()
+            options = [opt.strip() for opt in match.group(2).split("|")]
+            chosen = random.choice(options)
+            variables[var_name] = chosen
+            return chosen
+        prompt = var_decl_pattern.sub(replace_var_decl, prompt)
+        
+        # Replace variable references {var}
+        var_ref_pattern = re.compile(r"\{\s*(\w+)\s*\}")
+        def replace_var_ref(match):
+            var_name = match.group(1).strip()
+            return variables.get(var_name, match.group(0))
+        prompt = var_ref_pattern.sub(replace_var_ref, prompt)
+        
+        # Dynamic pattern: {opt1|opt2|...}
+        dynamic_pattern = re.compile(r"\{([^{}]+)\}")
+        def replace_dynamic(match):
+            options = [opt.strip() for opt in match.group(1).split("|")]
+            return random.choice(options)
+        prompt = dynamic_pattern.sub(replace_dynamic, prompt)
+        
+        # Remove extra spaces
         prompt = re.sub(r"\s+", " ", prompt).strip()
+        
         return prompt
 
     def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
