@@ -6,6 +6,7 @@ import hashlib
 import pickle
 import re
 import random
+import gzip
 
 from .utils import log, print_memory
 from diffusers.video_processor import VideoProcessor
@@ -780,7 +781,8 @@ class HyVideoTextEncode:
     def INPUT_TYPES(s):
         return {"required": {
             "prompt": ("STRING", {"default": "", "multiline": True} ),
-            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff})
+            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            "cache_subfolder": ("STRING", {"default": "", "tooltip": "Optional subfolder for cache storage"})
             },
             "optional": {
                 "text_encoders": ("HYVIDTEXTENCODER",),
@@ -804,9 +806,11 @@ class HyVideoTextEncode:
     def __init__(self):
         os.makedirs(self.CACHE_DIR, exist_ok=True)
 
-    def get_cache_path(self, prompt):
-        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache")
+    def get_cache_path(self, prompt, seed, cache_subfolder):
+        prompt_hash = hashlib.md5(f"{prompt}_{seed}".encode()).hexdigest()
+        cache_dir = os.path.join(self.CACHE_DIR, cache_subfolder) if cache_subfolder else self.CACHE_DIR
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.gz"), os.path.join(self.CACHE_DIR, f"{prompt_hash}.txt")        
 
     # Support for dynamic prompts with {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt, seed):
@@ -817,15 +821,25 @@ class HyVideoTextEncode:
         prompt = re.sub(r"\s+", " ", prompt).strip()
         return prompt
 
-    def process(self, text_encoders=None, prompt="", seed=0, force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
+    def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
         random.seed(seed)
         prompt = self.expand_dynamic_prompt(prompt, seed)
-        cache_path = self.get_cache_path(prompt)
-        txt_path = f"{cache_path}.txt"
+        cache_path, txt_path = self.get_cache_path(prompt, seed, cache_subfolder)
+        old_cache_path = cache_path.replace(".gz", "")
 
-        # Check if cache exists
+        # Check if compressed cache exists
         if os.path.exists(cache_path):
-            with open(cache_path, "rb") as f:
+            with gzip.open(cache_path, "rb") as f:
+                return (pickle.load(f),)
+
+        # Check if uncompressed cache exists and convert to compressed
+        if os.path.exists(old_cache_path):
+            with open(old_cache_path, "rb") as f:
+                data = f.read()
+            with gzip.open(cache_path, "wb") as f:
+                f.write(data)
+            os.remove(old_cache_path)
+            with gzip.open(cache_path, "rb") as f:
                 return (pickle.load(f),)
 
         if text_encoders is None:
@@ -1002,8 +1016,8 @@ class HyVideoTextEncode:
                 "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
             }
 
-        # Save to cache
-        with open(cache_path, "wb") as f:
+        # Save to compressed cache
+        with gzip.open(cache_path, "wb") as f:
             pickle.dump(prompt_embeds_dict, f)
 
         # Save prompt to txt file
@@ -1585,8 +1599,18 @@ class HyVideoLatentPreview:
 class HyVideoLoadRandomCachedPrompt:
     @classmethod
     def INPUT_TYPES(s):
+        cache_dir = s.CACHE_DIR
+        subdirs = []
+        if os.path.exists(cache_dir):
+            with os.scandir(cache_dir) as entries:
+                for entry in entries:
+                    if entry.is_dir():
+                        subdirs.append(entry.name)
+        subdirs = sorted(subdirs)
+        subdirs_list = [""] + subdirs
         return {"required": {
-            "seed": ("INT", {"default": 0, "min": 0, "max": 9999999, "tooltip": "Random seed for reproducibility"})
+            "seed": ("INT", {"default": 0, "min": 0, "max": 9999999, "tooltip": "Random seed for reproducibility"}),
+            "subdir": (subdirs_list, {"default": ""})
             }
         }
 
@@ -1604,30 +1628,49 @@ class HyVideoLoadRandomCachedPrompt:
         self.selected_cache = ""
         self.prompt_text = ""
 
-    def get_cache_path(self, prompt):
-        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache")
-
-    def process(self, seed=0):
+    def process(self, seed=0, subdir=""):
         random.seed(seed)
-        cache_files = [f for f in os.listdir(self.CACHE_DIR) if f.endswith(".cache")]
-
+        cache_files = []
+        search_dir = self.CACHE_DIR
+        if subdir:
+            search_dir = os.path.join(search_dir, subdir)
+        
+        if not os.path.isdir(search_dir):
+            raise ValueError(f"Directory {search_dir} does not exist.")
+        
+        for root, dirs, files in os.walk(search_dir):
+            for file in files:
+                if file.endswith(".cache.gz") or file.endswith(".cache"):
+                    rel_path = os.path.relpath(os.path.join(root, file), self.CACHE_DIR)
+                    cache_files.append(rel_path)
+        
         if not cache_files:
             raise ValueError("No cached prompt embeddings found.")
 
         self.selected_cache = random.choice(cache_files)
         cache_path = os.path.join(self.CACHE_DIR, self.selected_cache)
-        txt_path = cache_path.replace(".cache", ".cache.txt")
+        txt_path = cache_path.replace(".cache.gz", ".txt").replace(".cache", ".txt")
 
-        with open(cache_path, "rb") as f:
-            prompt_embeds_dict = pickle.load(f)
+        if self.selected_cache.endswith(".gz"):
+            with gzip.open(cache_path, "rb") as f:
+                prompt_embeds_dict = pickle.load(f)
+        else:
+            with open(cache_path, "rb") as f:
+                prompt_embeds_dict = pickle.load(f)
+
+            compressed_path = cache_path + ".gz"
+            with gzip.open(compressed_path, "wb") as f:
+                pickle.dump(prompt_embeds_dict, f)
+            os.remove(cache_path)
+            cache_path = compressed_path
+            self.selected_cache += ".gz"
 
         self.prompt_text = ""
         if os.path.exists(txt_path):
             with open(txt_path, "r") as f:
                 self.prompt_text = f.read().strip()
 
-        print('text', self.prompt_text)
+        print('Loaded prompt text:', self.prompt_text)
         return (prompt_embeds_dict, self.selected_cache, self.prompt_text)
 
 class HyVideoModifyPromptEmbeds:
@@ -1676,6 +1719,96 @@ class HyVideoModifyPromptEmbeds:
 
         return (modified_embeds,)
 
+class HyVideoMergeEmbeds:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "embeds_a": ("HYVIDEMBEDS",),
+                "embeds_b": ("HYVIDEMBEDS",),
+                "merge_mode": (["concat", "average"], {"default": "concat"}),
+                "handle_missing": (["error", "keep_first", "zero_fill"], {"default": "error"}),
+                "merge_dim": ("INT", {"default": 1, "min": 0, "max": 4}),
+            },
+            "optional": {
+                "weight_a": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0})
+            }
+        }
+    
+    RETURN_TYPES = ("HYVIDEMBEDS",)
+    FUNCTION = "merge"
+    CATEGORY = "HunyuanVideoWrapper"
+
+    def merge(self, embeds_a, embeds_b, merge_mode="concat", handle_missing="error", merge_dim=1, weight_a=0.5):
+        merged = {}
+        all_keys = set(embeds_a.keys()) | set(embeds_b.keys())
+        
+        for key in all_keys:
+            tensor_a = embeds_a.get(key)
+            tensor_b = embeds_b.get(key)
+
+            # Handle special keys
+            if key in ["cfg", "start_percent", "end_percent"]:
+                merged[key] = self._handle_special_scalars(key, tensor_a, tensor_b, merge_mode, weight_a)
+                continue
+
+            # Main logic for merging tensors
+            try:
+                if tensor_a is None or tensor_b is None:
+                    merged[key] = self._handle_missing_tensors(key, tensor_a, tensor_b, handle_missing)
+                else:
+                    merged[key] = self._merge_tensors(key, tensor_a, tensor_b, merge_mode, merge_dim, weight_a)
+            except Exception as e:
+                raise RuntimeError(f"Merge failed for {key}: {str(e)}")
+
+        return (merged,)
+
+    def _handle_special_scalars(self, key, t1, t2, mode, weight):
+        # Special handling for scalar values
+        val1 = t1.item() if t1 is not None else 0.0
+        val2 = t2.item() if t2 is not None else 0.0
+        
+        if mode == "average":
+            return torch.tensor([weight * val1 + (1 - weight) * val2])
+        return torch.tensor([val1 if t1 is not None else val2])
+
+    def _merge_tensors(self, key, t1, t2, mode, dim, weight):
+        # Main logic for merging tensors
+        if mode == "concat":
+            return torch.cat([t1, t2], dim=dim)
+        
+        if mode == "average":
+            # Weighted average with data type consideration
+            return (weight * t1.float() + (1 - weight) * t2.float()).to(t1.dtype)
+
+        raise ValueError(f"Unknown merge mode: {mode}")
+
+    def _handle_missing_tensors(self, key, t1, t2, handle_mode):
+        # Missing tensor handling
+        if handle_mode == "error":
+            raise ValueError(f"Missing tensor for key: {key}")
+        
+        if handle_mode == "keep_first":
+            return t1 if t1 is not None else t2
+        
+        if handle_mode == "zero_fill":
+            base_tensor = t1 if t1 is not None else t2
+            if base_tensor is None:
+                return self._create_default_tensor(key)
+            zeros = torch.zeros_like(base_tensor)
+            return torch.cat([base_tensor, zeros]) if t1 is None else torch.cat([zeros, base_tensor])
+
+    def _create_default_tensor(self, key):
+        # Create a default tensor based on the key
+        shape_rules = {
+            "prompt_embeds": (1, 77, 4096),
+            "negative_prompt_embeds": (1, 77, 4096),
+            "attention_mask": (1, 77),
+            "prompt_embeds_2": (1, 768),
+            "negative_prompt_embeds_2": (1, 768)
+        }
+        return torch.zeros(shape_rules.get(key, (1,)))
+
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
     "HyVideoDecode": HyVideoDecode,
@@ -1699,7 +1832,8 @@ NODE_CLASS_MAPPINGS = {
     "HyVideoEnhanceAVideo": HyVideoEnhanceAVideo,
     "HyVideoTeaCache": HyVideoTeaCache,
     "HyVideoLoadRandomCachedPrompt": HyVideoLoadRandomCachedPrompt,
-    "HyVideoModifyPromptEmbeds": HyVideoModifyPromptEmbeds
+    "HyVideoModifyPromptEmbeds": HyVideoModifyPromptEmbeds,
+    "HyVideoMergeEmbeds": HyVideoMergeEmbeds
     }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoSampler": "HunyuanVideo Sampler",
@@ -1724,5 +1858,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoEnhanceAVideo": "HunyuanVideo Enhance A Video",
     "HyVideoTeaCache": "HunyuanVideo TeaCache",
     "HyVideoLoadRandomCachedPrompt": "HunyuanVideo Load Random Cached Prompt",
-    "HyVideoModifyPromptEmbeds": "HunyuanVideo Modify Prompt Embed"
+    "HyVideoModifyPromptEmbeds": "HunyuanVideo Modify Prompt Embed",
+    "HyVideoMergeEmbeds": "HunyuanVideo Merge Embeds"
     }
