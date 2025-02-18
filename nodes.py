@@ -810,7 +810,7 @@ class HyVideoTextEncode:
         prompt_hash = hashlib.md5(f"{prompt}_{seed}".encode()).hexdigest()
         cache_dir = os.path.join(self.CACHE_DIR, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.gz"), os.path.join(self.CACHE_DIR, f"{prompt_hash}.txt")        
+        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.gz"), os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.txt")        
 
     # Support for dynamic prompts with {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt, seed):
@@ -1649,7 +1649,7 @@ class HyVideoLoadRandomCachedPrompt:
 
         self.selected_cache = random.choice(cache_files)
         cache_path = os.path.join(self.CACHE_DIR, self.selected_cache)
-        txt_path = cache_path.replace(".cache.gz", ".txt").replace(".cache", ".txt")
+        txt_path = cache_path.replace(".gz", "").replace(".cache", ".cache.txt")
 
         if self.selected_cache.endswith(".gz"):
             with gzip.open(cache_path, "rb") as f:
