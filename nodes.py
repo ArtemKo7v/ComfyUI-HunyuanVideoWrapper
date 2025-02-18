@@ -810,15 +810,13 @@ class HyVideoTextEncode:
         prompt_hash = hashlib.md5(f"{prompt}_{seed}".encode()).hexdigest()
         cache_dir = os.path.join(self.CACHE_DIR, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.gz"), os.path.join(self.CACHE_DIR, f"{prompt_hash}.cache.txt")        
+        return os.path.join(cache_dir, f"{prompt_hash}.cache.gz"), os.path.join(cache_dir, f"{prompt_hash}.cache.txt")
 
     # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt, seed):
-        import random
-        import re
-        
+
         variables = {}
-        
+
         # Replace variable declarations {var=opt1|opt2|...}
         var_decl_pattern = re.compile(r"\{\s*(\w+)\s*=\s*([^{}]+)\}")
         def replace_var_decl(match):
@@ -828,21 +826,40 @@ class HyVideoTextEncode:
             variables[var_name] = chosen
             return chosen
         prompt = var_decl_pattern.sub(replace_var_decl, prompt)
-        
+
+        # {var==val1|val2?true_ops:false_ops}
+        conditional_pattern = re.compile(
+            r"\{\s*(\w+)\s*==\s*([^?:]+)\s*\?\s*([^:]+)\s*:\s*([^}]+)\}"
+        )
+        def replace_conditional(match):
+            var_name, values, true_options, false_options = match.groups()
+            var_value = variables.get(var_name, None)
+            
+            # Split values and options
+            check_values = [v.strip() for v in values.split("|")]
+            true_choices = [opt.strip() for opt in true_options.split("|")]
+            false_choices = [opt.strip() for opt in false_options.split("|")]
+            
+            # Check if var_value is in check_values
+            if var_value in check_values:
+                return random.choice(true_choices)
+            else:
+                return random.choice(false_choices)
+        prompt = conditional_pattern.sub(replace_conditional, prompt)
+
         # Replace variable references {var}
         var_ref_pattern = re.compile(r"\{\s*(\w+)\s*\}")
         def replace_var_ref(match):
-            var_name = match.group(1).strip()
-            return variables.get(var_name, match.group(0))
+            return variables.get(match.group(1).strip(), match.group(0))
         prompt = var_ref_pattern.sub(replace_var_ref, prompt)
-        
+
         # Dynamic pattern: {opt1|opt2|...}
         dynamic_pattern = re.compile(r"\{([^{}]+)\}")
         def replace_dynamic(match):
             options = [opt.strip() for opt in match.group(1).split("|")]
             return random.choice(options)
         prompt = dynamic_pattern.sub(replace_dynamic, prompt)
-        
+
         # Remove extra spaces
         prompt = re.sub(r"\s+", " ", prompt).strip()
         
