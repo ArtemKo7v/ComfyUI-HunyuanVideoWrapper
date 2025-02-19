@@ -806,14 +806,14 @@ class HyVideoTextEncode:
     def __init__(self):
         os.makedirs(self.CACHE_DIR, exist_ok=True)
 
-    def get_cache_path(self, prompt, seed, cache_subfolder):
-        prompt_hash = hashlib.md5(f"{prompt}_{seed}".encode()).hexdigest()
+    def get_cache_path(self, prompt, cache_subfolder):
+        prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
         cache_dir = os.path.join(self.CACHE_DIR, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(cache_dir, f"{prompt_hash}.cache.gz"), os.path.join(cache_dir, f"{prompt_hash}.cache.txt")
 
     # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
-    def expand_dynamic_prompt(self, prompt, seed):
+    def expand_dynamic_prompt(self, prompt):
 
         variables = {}
 
@@ -867,8 +867,8 @@ class HyVideoTextEncode:
 
     def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
         random.seed(seed)
-        prompt = self.expand_dynamic_prompt(prompt, seed)
-        cache_path, txt_path = self.get_cache_path(prompt, seed, cache_subfolder)
+        prompt = self.expand_dynamic_prompt(prompt)
+        cache_path, txt_path = self.get_cache_path(prompt, cache_subfolder)
         old_cache_path = cache_path.replace(".gz", "")
 
         # Check if compressed cache exists
