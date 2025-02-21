@@ -1913,8 +1913,10 @@ class HyVideoCompileDynamicPrompt:
             prompt_hash = hashlib.md5(p.encode()).hexdigest()
             i += 1
             print(f"{prompt_hash} - {p}")
+        
+        print(f"Compiled {i} prompts")
 
-        return f"Compiled {i} prompts"
+        return ""
 
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
