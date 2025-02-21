@@ -6,6 +6,8 @@ import itertools
 import hashlib
 import re
 import random
+import pickle
+import gzip
 
 from .utils import log, print_memory
 from diffusers.video_processor import VideoProcessor
@@ -808,7 +810,7 @@ class HyVideoTextEncode:
         prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
         cache_dir = os.path.join(text_embeds_path, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(cache_dir, f"{prompt_hash}.safetensors")
+        return os.path.join(cache_dir, f"{prompt_hash}.gz")
 
     # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt):
@@ -852,7 +854,12 @@ class HyVideoTextEncode:
         # Try to load from safetensors cache
         if os.path.exists(cache_path):
             try:
-                loaded_tensors = load_torch_file(cache_path, safe_load=True)
+                loaded_data = {}
+                with gzip.open(cache_path, "rb") as f:
+                    loaded_data = pickle.load(f)
+
+                loaded_tensors = loaded_data.get("prompt_embeds_dict", {})
+
                 # Reconstruct original dictionary with None for missing keys
                 prompt_embeds_dict = {
                     "prompt_embeds": loaded_tensors.get("prompt_embeds", None),
@@ -867,7 +874,8 @@ class HyVideoTextEncode:
                     "start_percent": loaded_tensors.get("start_percent", None),
                     "end_percent": loaded_tensors.get("end_percent", None),
                 }
-                loaded_prompt = loaded_tensors.get("prompt", None);
+                loaded_prompt = loaded_data.get("prompt", "");
+
                 print(f"Loaded prompt from cache: {loaded_prompt}")
 
                 # Verify prompt match
@@ -1053,13 +1061,17 @@ class HyVideoTextEncode:
             }
 
         # Save to safetensors
-        tensors_to_save = {
-            "prompt": torch.tensor(prompt)
+        data_to_save = {
+            "prompt": prompt,
+            "prompt_embeds_dict": {}
         }
         for key, value in prompt_embeds_dict.items():
             if value is not None:
-                tensors_to_save[key] = value
-        save_torch_file(tensors_to_save, cache_path)
+                print(f"Saving {key} to cache")
+                data_to_save["prompt_embeds_dict"][key] = value
+
+        with gzip.open(cache_path, "wb") as f:
+            pickle.dump(data_to_save, f)
 
         return (prompt_embeds_dict, prompt,)
 
