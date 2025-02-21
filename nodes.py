@@ -1851,14 +1851,28 @@ class HyVideoMergeEmbeds:
 class HyVideoCompileDynamicPrompt:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {
-            "prompt": ("STRING", {"default": "", "multiline": True})
-        }}
+        return {
+            "required": {
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "name": ("STRING", {"default": "prompt", "multiline": False})
+            },
+            "optional": {
+                "text_encoders": ("HYVIDTEXTENCODER",)
+            }
+        }
 
-    RETURN_TYPES = ("STRING", )
-    RETURN_NAMES = ("expanded_prompts", )
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
+    CACHE_DIR = text_embeds_path
+
+    def __init__(self):
+        os.makedirs(self.CACHE_DIR, exist_ok=True)
+
+    def get_file_path(self, prompt, cache_name):
+        prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
+        return os.path.join(self.CACHE_DIR, f"{cache_name}_{prompt_hash}.safetensors")
 
     def expand_dynamic_prompt(self, prompt):
         # Extract variable declarations {var=opt1|opt2|...}
@@ -1904,17 +1918,76 @@ class HyVideoCompileDynamicPrompt:
 
         return all_prompts
 
-    def process(self, prompt=""):
+    def process(self, prompt="", name="", text_encoders=None):
+        file_path = self.get_file_path(prompt, name)
         expanded_prompts = self.expand_dynamic_prompt(prompt)
+
+        if text_encoders is None:
+            raise ValueError("text_encoders is required if cache is not available.")
+
+        device = mm.text_encoder_device()
+        text_encoder = text_encoders["text_encoder"]
+        prompt_template_dict = PROMPT_TEMPLATE["dit-llm-encode-video"]
+
+        def encode_prompt(self, prompt, text_encoder, image_token_selection_expr="::4", image1=None, image2=None, clip_text_override=None):
+            text_inputs = text_encoder.text2tokens(prompt, 
+                                                   prompt_template=prompt_template_dict,
+                                                   image1=image1,
+                                                   image2=image2,
+                                                   clip_text_override=clip_text_override)
+            prompt_outputs = text_encoder.encode(text_inputs, 
+                                                 prompt_template=prompt_template_dict, 
+                                                 image_token_selection_expr=image_token_selection_expr, 
+                                                 device=device
+                                                 )
+            prompt_embeds = prompt_outputs.hidden_state
+
+            attention_mask = prompt_outputs.attention_mask
+            log.info(f"{text_encoder.text_encoder_type} prompt attention_mask shape: {attention_mask.shape}, masked tokens: {attention_mask[0].sum().item()}")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+                bs_embed, seq_len = attention_mask.shape
+                attention_mask = attention_mask.repeat(1, 1)
+                attention_mask = attention_mask.view(
+                    bs_embed, seq_len
+                )
+
+            prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
+
+            return (prompt_embeds, attention_mask)
+
+        text_encoder.to(device)
+
+        tensors_to_save = {}
 
         # Output MD5 hash and prompt
         i = 0
         for p in expanded_prompts:
             prompt_hash = hashlib.md5(p.encode()).hexdigest()
+
+            with torch.autocast(device_type=mm.get_autocast_device(device), dtype=text_encoder.dtype, enabled=text_encoder.is_fp8):
+                prompt_embeds, attention_mask = encode_prompt(self, p, text_encoder)
+
+            prompt_embeds_dict = {
+                "prompt_embeds": prompt_embeds,
+                "attention_mask": attention_mask,
+            }
+
+            for key, value in prompt_embeds_dict.items():
+                if value is not None:
+                    hash_key = f"{prompt_hash}_{key}"
+                    tensors_to_save[hash_key] = value
+
             i += 1
-            print(f"{prompt_hash} - {p}")
+            print(f"Prompt #{i} ({prompt_hash}) - {p}")
         
         print(f"Compiled {i} prompts")
+
+        # Prepare metadata with prompts
+        metadata = {
+            "prompt": prompt
+        }
+        save_torch_file(tensors_to_save, file_path, metadata=metadata)
 
         return ""
 
