@@ -59,7 +59,7 @@ import comfy.model_base
 import comfy.latent_formats
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
-text_embeds_path = os.path.join(folder_paths.models_dir, "embeds", "hyvid_embeds");
+text_embeds_path = os.path.join(folder_paths.models_dir, "embeddings", "hyvid_embeds");
 
 VAE_SCALING_FACTOR = 0.476986
 
@@ -810,7 +810,7 @@ class HyVideoTextEncode:
         prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
         cache_dir = os.path.join(text_embeds_path, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(cache_dir, f"{prompt_hash}.gz")
+        return os.path.join(cache_dir, f"{prompt_hash}.pt.gz")
 
     # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt):
@@ -847,7 +847,6 @@ class HyVideoTextEncode:
 
     def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
         random.seed(seed)
-        dynamic_prompt_template = prompt
         prompt = self.expand_dynamic_prompt(prompt)
         cache_path = self.get_cache_path(prompt, cache_subfolder)
 
@@ -1676,7 +1675,6 @@ class HyVideoLoadRandomCachedPrompt:
         os.makedirs(self.CACHE_DIR, exist_ok=True)
         self.selected_cache = ""
         self.prompt_text = ""
-        self.dynamic_prompt_template = ""
 
     def process(self, seed=0, subdir=""):
         random.seed(seed)
@@ -1690,7 +1688,7 @@ class HyVideoLoadRandomCachedPrompt:
         
         for root, dirs, files in os.walk(search_dir):
             for file in files:
-                if file.endswith(".safetensors"):
+                if file.endswith(".pt.gz"):
                     rel_path = os.path.relpath(os.path.join(root, file), self.CACHE_DIR)
                     cache_files.append(rel_path)
         
@@ -1703,12 +1701,27 @@ class HyVideoLoadRandomCachedPrompt:
         # Try to load from safetensors cache
         if os.path.exists(cache_path):
             try:
-                loaded = load_torch_file(cache_path, safe_load=True)
-                # Reconstruct dictionary
+                loaded_data = {}
+                with gzip.open(cache_path, "rb") as f:
+                    loaded_data = pickle.load(f)
+
+                loaded_tensors = loaded_data.get("prompt_embeds_dict", {})
+
+                # Reconstruct original dictionary with None for missing keys
                 prompt_embeds_dict = {
-                    k: v for k, v in loaded.items() if k != "prompt"
+                    "prompt_embeds": loaded_tensors.get("prompt_embeds", None),
+                    "negative_prompt_embeds": loaded_tensors.get("negative_prompt_embeds", None),
+                    "attention_mask": loaded_tensors.get("attention_mask", None),
+                    "negative_attention_mask": loaded_tensors.get("negative_attention_mask", None),
+                    "prompt_embeds_2": loaded_tensors.get("prompt_embeds_2", None),
+                    "negative_prompt_embeds_2": loaded_tensors.get("negative_prompt_embeds_2", None),
+                    "attention_mask_2": loaded_tensors.get("attention_mask_2", None),
+                    "negative_attention_mask_2": loaded_tensors.get("negative_attention_mask_2", None),
+                    "cfg": loaded_tensors.get("cfg", None),
+                    "start_percent": loaded_tensors.get("start_percent", None),
+                    "end_percent": loaded_tensors.get("end_percent", None),
                 }
-                self.prompt_text = loaded.get("prompt", None);
+                self.prompt_text = loaded_data.get("prompt", "");
             except Exception as e:
                 log.warning(f"Failed to load cache: {e}, regenerating...")
 
@@ -1875,7 +1888,7 @@ class HyVideoCompileDynamicPrompt:
 
     def get_file_path(self, prompt, cache_name):
         prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
-        return os.path.join(self.CACHE_DIR, f"{cache_name}_{prompt_hash}.safetensors")
+        return os.path.join(self.CACHE_DIR, f"{cache_name}_{prompt_hash}.pts.gz")
 
     def expand_dynamic_prompt(self, prompt):
         # Extract variable declarations {var=opt1|opt2|...}
@@ -1930,6 +1943,7 @@ class HyVideoCompileDynamicPrompt:
 
         device = mm.text_encoder_device()
         text_encoder = text_encoders["text_encoder"]
+        text_encoder_2 = text_encoders["text_encoder_2"]
         prompt_template_dict = PROMPT_TEMPLATE["dit-llm-encode-video"]
 
         def encode_prompt(self, prompt, text_encoder, image_token_selection_expr="::4", image1=None, image2=None, clip_text_override=None):
@@ -1960,9 +1974,12 @@ class HyVideoCompileDynamicPrompt:
             return (prompt_embeds, attention_mask)
 
         text_encoder.to(device)
+        if text_encoder_2 is not None:
+            text_encoder_2.to(device)
 
-        tensors_to_save = {
-            "prompt": torch.tensor(prompt)
+        data_to_save = {
+            "prompt": torch.tensor(prompt),
+            "prompt_embeds": {}
         }
 
         # Output MD5 hash and prompt
@@ -1972,25 +1989,25 @@ class HyVideoCompileDynamicPrompt:
 
             with torch.autocast(device_type=mm.get_autocast_device(device), dtype=text_encoder.dtype, enabled=text_encoder.is_fp8):
                 prompt_embeds, attention_mask = encode_prompt(self, p, text_encoder)
+                if text_encoder_2 is not None:
+                    prompt_embeds_2, attention_mask_2 = encode_prompt(self, p, text_encoder_2)
 
-            prompt_embeds_dict = {
-                "prompt_embeds": prompt_embeds,
-                "attention_mask": attention_mask,
+            prompt_embed = {
+                "prompt": p,
+                "prompt_embeds_dict": {
+                    "prompt_embeds": prompt_embeds,
+                    "attention_mask": attention_mask,
+                    "prompt_embeds_2": prompt_embeds_2,
+                    "attention_mask_2": attention_mask_2
+                }
             }
+            data_to_save["prompt_embeds"][f"{prompt_hash}"] = prompt_embed
 
-            tensors_to_save[f"{prompt_hash}_prompt"] = torch.tensor(p)
-            for key, value in prompt_embeds_dict.items():
-                if value is not None:
-                    hash_key = f"{prompt_hash}_{key}"
-                    tensors_to_save[hash_key] = value
-
-            i += 1
-            print(f"Prompt #{i} ({prompt_hash}) - {p}")
-        
         print(f"Compiled {i} prompts")
 
-        # Save safetensors file
-        save_torch_file(tensors_to_save, file_path)
+        # Save to file
+        with gzip.open(file_path, "wb") as f:
+            pickle.dump(data_to_save, f)
 
         return ""
 
