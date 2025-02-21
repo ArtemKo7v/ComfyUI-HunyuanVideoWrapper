@@ -1867,46 +1867,54 @@ class HyVideoCompileDynamicPrompt:
         for match in var_decl_pattern.finditer(prompt):
             var_name, options = match.groups()
             variables[var_name] = options.split("|")
-        
+
         # Generate all combinations of variable values
         var_keys = list(variables.keys())
         var_values = list(itertools.product(*variables.values()))
-        
-        # Extract inline dynamic patterns {opt1|opt2|...}
-        dynamic_pattern = re.compile(r"\{([^{}=]+)\}")
-        dynamic_options = [match.group(1).split("|") for match in dynamic_pattern.finditer(prompt)]
-        
-        # Generate all combinations for inline dynamic patterns
-        dynamic_combinations = list(itertools.product(*dynamic_options)) if dynamic_options else [[]]
-        
+
         all_prompts = []
-        
+
         for var_value_set in var_values:
             temp_prompt = prompt
+            local_vars = dict(zip(var_keys, var_value_set))
             
-            # Replace variable declarations {var=opt1|opt2|...}
-            for key, value in zip(var_keys, var_value_set):
+            # Replace variable declarations {var=opt1|opt2|...} with chosen values
+            for key, value in local_vars.items():
                 temp_prompt = re.sub(fr"\{{{key}=.*?\}}", value, temp_prompt)
-            
+
+            # Replace variable references {var} with assigned values
+            var_ref_pattern = re.compile(r"\{(\w+)\}")
+            def replace_var(match):
+                var_name = match.group(1)
+                return local_vars.get(var_name, match.group(0))
+            temp_prompt = var_ref_pattern.sub(replace_var, temp_prompt)
+
+            # Expand inline dynamic patterns {opt1|opt2|...}
+            dynamic_pattern = re.compile(r"\{([^{}=]+)\}")
+            dynamic_options = [match.group(1).split("|") for match in dynamic_pattern.finditer(temp_prompt)]
+            dynamic_combinations = list(itertools.product(*dynamic_options)) if dynamic_options else [[]]
+
             for dynamic_set in dynamic_combinations:
                 final_prompt = temp_prompt
                 for dynamic_value in dynamic_set:
                     final_prompt = dynamic_pattern.sub(dynamic_value, final_prompt, count=1)
-                
+
                 final_prompt = re.sub(r"\s+", " ", final_prompt).strip()
                 all_prompts.append(final_prompt)
-        
+
         return all_prompts
-    
+
     def process(self, prompt=""):
         expanded_prompts = self.expand_dynamic_prompt(prompt)
-        
+
         # Output MD5 hash and prompt
+        i = 0
         for p in expanded_prompts:
             prompt_hash = hashlib.md5(p.encode()).hexdigest()
+            i += 1
             print(f"{prompt_hash} - {p}")
-        
-        return "\n".join([f"{hashlib.md5(p.encode()).hexdigest()} - {p}" for p in expanded_prompts])
+
+        return f"Compiled {i} prompts"
 
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
