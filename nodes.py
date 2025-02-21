@@ -1869,11 +1869,9 @@ class HyVideoCompileDynamicPrompt:
     def INPUT_TYPES(s):
         return {
             "required": {
+                "text_encoders": ("HYVIDTEXTENCODER",),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "name": ("STRING", {"default": "prompt", "multiline": False})
-            },
-            "optional": {
-                "text_encoders": ("HYVIDTEXTENCODER",)
             }
         }
 
@@ -1937,9 +1935,6 @@ class HyVideoCompileDynamicPrompt:
     def process(self, prompt="", name="", text_encoders=None):
         file_path = self.get_file_path(prompt, name)
         expanded_prompts = self.expand_dynamic_prompt(prompt)
-
-        if text_encoders is None:
-            raise ValueError("text_encoders is required if cache is not available.")
 
         device = mm.text_encoder_device()
         text_encoder = text_encoders["text_encoder"]
