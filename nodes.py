@@ -2,11 +2,10 @@ import os
 import torch
 import json
 import gc
+import itertools
 import hashlib
-import pickle
 import re
 import random
-import gzip
 
 from .utils import log, print_memory
 from diffusers.video_processor import VideoProcessor
@@ -825,26 +824,6 @@ class HyVideoTextEncode:
             variables[var_name] = chosen
             return chosen
         prompt = var_decl_pattern.sub(replace_var_decl, prompt)
-
-        # {var==val1|val2?true_ops:false_ops} : not working yet, todo
-        conditional_pattern = re.compile(
-            r"\{\s*(\w+)\s*==\s*([^?:]+)\s*\?\s*([^:]+)\s*:\s*([^}]+)\}"
-        )
-        def replace_conditional(match):
-            var_name, values, true_options, false_options = match.groups()
-            var_value = variables.get(var_name, None)
-            
-            # Split values and options
-            check_values = [v.strip() for v in values.split("|")]
-            true_choices = [opt.strip() for opt in true_options.split("|")]
-            false_choices = [opt.strip() for opt in false_options.split("|")]
-            
-            # Check if var_value is in check_values
-            if var_value in check_values:
-                return random.choice(true_choices)
-            else:
-                return random.choice(false_choices)
-        prompt = conditional_pattern.sub(replace_conditional, prompt)
 
         # Replace variable references {var}
         var_ref_pattern = re.compile(r"\{\s*(\w+)\s*\}")
@@ -1869,6 +1848,69 @@ class HyVideoMergeEmbeds:
         }
         return torch.zeros(shape_rules.get(key, (1,)))
 
+class HyVideoCompileDynamicPrompt:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "prompt": ("STRING", {"default": "", "multiline": True})
+        }}
+
+    RETURN_TYPES = ("STRING", )
+    RETURN_NAMES = ("expanded_prompts", )
+    FUNCTION = "process"
+    CATEGORY = "HunyuanVideoWrapper"
+
+    def expand_dynamic_prompt(self, prompt):
+        variables = {}
+        
+        # Extract variable declarations {var=opt1|opt2|...}
+        var_decl_pattern = re.compile(r"\{\s*(\w+)\s*=\s*([^{}]+)\}")
+        for match in var_decl_pattern.finditer(prompt):
+            var_name = match.group(1).strip()
+            options = [opt.strip() for opt in match.group(2).split("|")]
+            variables[var_name] = options
+        
+        # Generate all combinations for declared variables
+        var_keys = list(variables.keys())
+        var_values = list(itertools.product(*variables.values()))
+        
+        # Extract inline dynamic patterns {opt1|opt2|...}
+        dynamic_pattern = re.compile(r"\{([^{}]+)\}")
+        dynamic_options = [match.group(1).split("|") for match in dynamic_pattern.finditer(prompt)]
+        
+        # Generate all combinations for inline dynamic patterns
+        dynamic_combinations = list(itertools.product(*dynamic_options)) if dynamic_options else [[]]
+        
+        all_prompts = []
+        
+        for var_value_set in var_values:
+            temp_prompt = prompt
+            
+            # Replace variable declarations
+            for key, value in zip(var_keys, var_value_set):
+                temp_prompt = re.sub(fr"\{{\s*{key}\s*\}}", value, temp_prompt)
+            
+            # Replace inline dynamic patterns
+            for dynamic_set in dynamic_combinations:
+                final_prompt = temp_prompt
+                for dynamic_value in dynamic_set:
+                    final_prompt = dynamic_pattern.sub(dynamic_value, final_prompt, count=1)
+                
+                final_prompt = re.sub(r"\s+", " ", final_prompt).strip()
+                all_prompts.append(final_prompt)
+        
+        return all_prompts
+    
+    def process(self, prompt=""):
+        expanded_prompts = self.expand_dynamic_prompt(prompt)
+        
+        # Output MD5 hash and prompt
+        for p in expanded_prompts:
+            prompt_hash = hashlib.md5(p.encode()).hexdigest()
+            print(f"{prompt_hash} - {p}")
+        
+        return "\n".join([f"{hashlib.md5(p.encode()).hexdigest()} - {p}" for p in expanded_prompts])
+
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
     "HyVideoDecode": HyVideoDecode,
@@ -1893,7 +1935,8 @@ NODE_CLASS_MAPPINGS = {
     "HyVideoTeaCache": HyVideoTeaCache,
     "HyVideoLoadRandomCachedPrompt": HyVideoLoadRandomCachedPrompt,
     "HyVideoModifyPromptEmbeds": HyVideoModifyPromptEmbeds,
-    "HyVideoMergeEmbeds": HyVideoMergeEmbeds
+    "HyVideoMergeEmbeds": HyVideoMergeEmbeds,
+    "HyVideoCompileDynamicPrompt": HyVideoCompileDynamicPrompt
     }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoSampler": "HunyuanVideo Sampler",
@@ -1919,5 +1962,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HyVideoTeaCache": "HunyuanVideo TeaCache",
     "HyVideoLoadRandomCachedPrompt": "HunyuanVideo Load Random Cached Prompt",
     "HyVideoModifyPromptEmbeds": "HunyuanVideo Modify Prompt Embed",
-    "HyVideoMergeEmbeds": "HunyuanVideo Merge Embeds"
+    "HyVideoMergeEmbeds": "HunyuanVideo Merge Embeds",
+    "HyVideoCompileDynamicPrompt": "HunyuanVideo Dynamic Prompt Compiler"
     }
