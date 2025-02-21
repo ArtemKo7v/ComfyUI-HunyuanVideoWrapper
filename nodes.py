@@ -1861,21 +1861,19 @@ class HyVideoCompileDynamicPrompt:
     CATEGORY = "HunyuanVideoWrapper"
 
     def expand_dynamic_prompt(self, prompt):
-        variables = {}
-        
         # Extract variable declarations {var=opt1|opt2|...}
-        var_decl_pattern = re.compile(r"\{\s*(\w+)\s*=\s*([^{}]+)\}")
+        var_decl_pattern = re.compile(r"\{(\w+)=(.*?)\}")
+        variables = {}
         for match in var_decl_pattern.finditer(prompt):
-            var_name = match.group(1).strip()
-            options = [opt.strip() for opt in match.group(2).split("|")]
-            variables[var_name] = options
+            var_name, options = match.groups()
+            variables[var_name] = options.split("|")
         
-        # Generate all combinations for declared variables
+        # Generate all combinations of variable values
         var_keys = list(variables.keys())
         var_values = list(itertools.product(*variables.values()))
         
         # Extract inline dynamic patterns {opt1|opt2|...}
-        dynamic_pattern = re.compile(r"\{([^{}]+)\}")
+        dynamic_pattern = re.compile(r"\{([^{}=]+)\}")
         dynamic_options = [match.group(1).split("|") for match in dynamic_pattern.finditer(prompt)]
         
         # Generate all combinations for inline dynamic patterns
@@ -1886,11 +1884,10 @@ class HyVideoCompileDynamicPrompt:
         for var_value_set in var_values:
             temp_prompt = prompt
             
-            # Replace variable declarations
+            # Replace variable declarations {var=opt1|opt2|...}
             for key, value in zip(var_keys, var_value_set):
-                temp_prompt = re.sub(fr"\{{\s*{key}\s*\}}", value, temp_prompt)
+                temp_prompt = re.sub(fr"\{{{key}=.*?\}}", value, temp_prompt)
             
-            # Replace inline dynamic patterns
             for dynamic_set in dynamic_combinations:
                 final_prompt = temp_prompt
                 for dynamic_value in dynamic_set:
