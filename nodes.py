@@ -866,7 +866,7 @@ class HyVideoTextEncode:
 
     def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
         random.seed(seed)
-        original_prompt = prompt
+        dynamic_prompt_template = prompt
         prompt = self.expand_dynamic_prompt(prompt)
         cache_path = self.get_cache_path(prompt, cache_subfolder)
 
@@ -877,7 +877,7 @@ class HyVideoTextEncode:
                 metadata = loaded.get("metadata", {})
 
                 # Verify prompt match
-                if metadata.get("expanded_prompt", "") != prompt:
+                if metadata.get("prompt_text", "") != prompt:
                     raise ValueError("Cached prompt mismatch")
 
                 # Reconstruct dictionary
@@ -1064,8 +1064,8 @@ class HyVideoTextEncode:
 
        # Prepare metadata with prompts
         metadata = {
-            "original_prompt": original_prompt,
-            "expanded_prompt": prompt,
+            "dynamic_prompt_template": dynamic_prompt_template,
+            "prompt_text": prompt,
             "seed": str(seed),
             "prompt_template": prompt_template,
         }
@@ -1680,8 +1680,8 @@ class HyVideoLoadRandomCachedPrompt:
         }
 
     OUTPUT_NODE = True
-    RETURN_TYPES = ("HYVIDEMBEDS", "STRING", "STRING")
-    RETURN_NAMES = ("hyvid_embeds", "cache_filename", "prompt_text")
+    RETURN_TYPES = ("HYVIDEMBEDS", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("hyvid_embeds", "cache_filename", "prompt_text", "dynamic_prompt_template")
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
     DISPLAY_NAME = "HyVideo Load Random Cached Prompt"
@@ -1692,6 +1692,7 @@ class HyVideoLoadRandomCachedPrompt:
         os.makedirs(self.CACHE_DIR, exist_ok=True)
         self.selected_cache = ""
         self.prompt_text = ""
+        self.dynamic_prompt_template = ""
 
     def process(self, seed=0, subdir=""):
         random.seed(seed)
@@ -1726,12 +1727,13 @@ class HyVideoLoadRandomCachedPrompt:
                     k: v for k, v in loaded.items() if k != "metadata"
                 }
 
-                self.prompt_text = metadata.get("prompt", "");
+                self.prompt_text = metadata.get("prompt_text", "");
+                self.dynamic_prompt_template = metadata.get("dynamic_prompt_template", "")
             except Exception as e:
                 log.warning(f"Failed to load cache: {e}, regenerating...")
 
         print('Loaded prompt text:', self.prompt_text)
-        return (prompt_embeds_dict, self.selected_cache, self.prompt_text)
+        return (prompt_embeds_dict, self.selected_cache, self.prompt_text, self.dynamic_prompt_template)
 
 class HyVideoModifyPromptEmbeds:
     @classmethod
