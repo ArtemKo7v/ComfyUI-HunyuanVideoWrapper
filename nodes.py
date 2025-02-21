@@ -797,7 +797,7 @@ class HyVideoTextEncode:
         }
 
     RETURN_TYPES = ("HYVIDEMBEDS", )
-    RETURN_NAMES = ("hyvid_embeds",)
+    RETURN_NAMES = ("hyvid_embeds", "prompt", )
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
 
@@ -1090,7 +1090,7 @@ class HyVideoTextEncode:
             metadata=metadata  # Also embed metadata in file header
         )
 
-        return (prompt_embeds_dict,)
+        return (prompt_embeds_dict, prompt,)
 
 class HyVideoTextImageEncode(HyVideoTextEncode):
     # Experimental Image Prompt to Video (IP2V) via VLM implementation by @Dango233
