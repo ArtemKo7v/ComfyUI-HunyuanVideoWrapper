@@ -867,8 +867,8 @@ class HyVideoTextEncode:
                     "start_percent": loaded_tensors.get("start_percent", None),
                     "end_percent": loaded_tensors.get("end_percent", None),
                 }
-                metadata = loaded_tensors.get("metadata", {})
-                loaded_prompt = metadata.get("prompt_text", "")
+                loaded_prompt = loaded_tensors.get("prompt", None);
+                print(f"Loaded prompt from cache: {loaded_prompt}")
 
                 # Verify prompt match
                 if loaded_prompt != prompt:
@@ -1052,19 +1052,14 @@ class HyVideoTextEncode:
                 "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
             }
 
-        # Save to safetensors with metadata
-        tensors_to_save = {}
+        # Save to safetensors
+        tensors_to_save = {
+            "prompt": torch.tensor(prompt)
+        }
         for key, value in prompt_embeds_dict.items():
             if value is not None:
                 tensors_to_save[key] = value
-        # Prepare metadata with prompts
-        metadata = {
-            "dynamic_prompt_template": dynamic_prompt_template,
-            "prompt_text": prompt,
-            "seed": str(seed),
-            "prompt_template": prompt_template,
-        }
-        save_torch_file(tensors_to_save, cache_path, metadata=metadata)
+        save_torch_file(tensors_to_save, cache_path)
 
         return (prompt_embeds_dict, prompt,)
 
@@ -1657,8 +1652,8 @@ class HyVideoLoadRandomCachedPrompt:
         }
 
     OUTPUT_NODE = True
-    RETURN_TYPES = ("HYVIDEMBEDS", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("hyvid_embeds", "cache_filename", "prompt_text", "dynamic_prompt_template")
+    RETURN_TYPES = ("HYVIDEMBEDS", "STRING", "STRING")
+    RETURN_NAMES = ("hyvid_embeds", "cache_filename", "prompt_text")
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
     DISPLAY_NAME = "HyVideo Load Random Cached Prompt"
@@ -1697,20 +1692,16 @@ class HyVideoLoadRandomCachedPrompt:
         if os.path.exists(cache_path):
             try:
                 loaded = load_torch_file(cache_path, safe_load=True)
-                metadata = loaded.get("metadata", {})
-
                 # Reconstruct dictionary
                 prompt_embeds_dict = {
-                    k: v for k, v in loaded.items() if k != "metadata"
+                    k: v for k, v in loaded.items() if k != "prompt"
                 }
-
-                self.prompt_text = metadata.get("prompt_text", "");
-                self.dynamic_prompt_template = metadata.get("dynamic_prompt_template", "")
+                self.prompt_text = loaded.get("prompt", None);
             except Exception as e:
                 log.warning(f"Failed to load cache: {e}, regenerating...")
 
         print('Loaded prompt text:', self.prompt_text)
-        return (prompt_embeds_dict, self.selected_cache, self.prompt_text, self.dynamic_prompt_template)
+        return (prompt_embeds_dict, self.selected_cache, self.prompt_text)
 
 class HyVideoModifyPromptEmbeds:
     @classmethod
@@ -1958,7 +1949,9 @@ class HyVideoCompileDynamicPrompt:
 
         text_encoder.to(device)
 
-        tensors_to_save = {}
+        tensors_to_save = {
+            "prompt": torch.tensor(prompt)
+        }
 
         # Output MD5 hash and prompt
         i = 0
@@ -1973,6 +1966,7 @@ class HyVideoCompileDynamicPrompt:
                 "attention_mask": attention_mask,
             }
 
+            tensors_to_save[f"{prompt_hash}_prompt"] = torch.tensor(p)
             for key, value in prompt_embeds_dict.items():
                 if value is not None:
                     hash_key = f"{prompt_hash}_{key}"
@@ -1983,11 +1977,8 @@ class HyVideoCompileDynamicPrompt:
         
         print(f"Compiled {i} prompts")
 
-        # Prepare metadata with prompts
-        metadata = {
-            "prompt": prompt
-        }
-        save_torch_file(tensors_to_save, file_path, metadata=metadata)
+        # Save safetensors file
+        save_torch_file(tensors_to_save, file_path)
 
         return ""
 
