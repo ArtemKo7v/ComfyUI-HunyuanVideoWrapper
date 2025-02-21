@@ -58,6 +58,7 @@ import comfy.model_base
 import comfy.latent_formats
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
+text_embeds_path = os.path.join(folder_paths.models_dir, "embeds", "hyvid_embeds");
 
 VAE_SCALING_FACTOR = 0.476986
 
@@ -791,6 +792,7 @@ class HyVideoTextEncode:
                 "custom_prompt_template": ("PROMPT_TEMPLATE", {"default": PROMPT_TEMPLATE["dit-llm-encode-video"], "multiline": True}),
                 "clip_l": ("CLIP", {"tooltip": "Use comfy clip model instead, in this case the text encoder loader's clip_l should be disabled"}),
                 "hyvid_cfg": ("HYVID_CFG", ),
+                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}
             }
         }
 
@@ -799,18 +801,16 @@ class HyVideoTextEncode:
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
 
-    # This is a simple cache for the text encoder embeddings, it uses pickle so it is not safe to use.
-    # Later I will use HyVideoTextEmbedsLoad / HyVideoTextEmbedsSave to save and load the embeddings as safetensors.
-    CACHE_DIR = os.path.join(script_directory, "cache_encoder")
+    CACHE_DIR = text_embeds_path
 
     def __init__(self):
         os.makedirs(self.CACHE_DIR, exist_ok=True)
 
     def get_cache_path(self, prompt, cache_subfolder):
         prompt_hash = hashlib.md5(f"{prompt}".encode()).hexdigest()
-        cache_dir = os.path.join(self.CACHE_DIR, cache_subfolder) if cache_subfolder else self.CACHE_DIR
+        cache_dir = os.path.join(text_embeds_path, cache_subfolder) if cache_subfolder else self.CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(cache_dir, f"{prompt_hash}.cache.gz"), os.path.join(cache_dir, f"{prompt_hash}.cache.txt")
+        return os.path.join(cache_dir, f"{prompt_hash}.safetensors")
 
     # Support for dynamic prompts with {var=a|b|c} + {var} and {a|b|c} syntax
     def expand_dynamic_prompt(self, prompt):
@@ -827,7 +827,7 @@ class HyVideoTextEncode:
             return chosen
         prompt = var_decl_pattern.sub(replace_var_decl, prompt)
 
-        # {var==val1|val2?true_ops:false_ops}
+        # {var==val1|val2?true_ops:false_ops} : not working yet, todo
         conditional_pattern = re.compile(
             r"\{\s*(\w+)\s*==\s*([^?:]+)\s*\?\s*([^:]+)\s*:\s*([^}]+)\}"
         )
@@ -867,24 +867,27 @@ class HyVideoTextEncode:
 
     def process(self, text_encoders=None, prompt="", seed=0, cache_subfolder="", force_offload=True, prompt_template="video", custom_prompt_template=None, clip_l=None, image_token_selection_expr="::4", hyvid_cfg=None, image1=None, image2=None, clip_text_override=None):
         random.seed(seed)
+        original_prompt = prompt
         prompt = self.expand_dynamic_prompt(prompt)
-        cache_path, txt_path = self.get_cache_path(prompt, cache_subfolder)
-        old_cache_path = cache_path.replace(".gz", "")
+        cache_path = self.get_cache_path(prompt, cache_subfolder)
 
-        # Check if compressed cache exists
+        # Try to load from safetensors cache
         if os.path.exists(cache_path):
-            with gzip.open(cache_path, "rb") as f:
-                return (pickle.load(f),)
+            try:
+                loaded = load_torch_file(cache_path, safe_load=True)
+                metadata = loaded.get("metadata", {})
 
-        # Check if uncompressed cache exists and convert to compressed
-        if os.path.exists(old_cache_path):
-            with open(old_cache_path, "rb") as f:
-                data = f.read()
-            with gzip.open(cache_path, "wb") as f:
-                f.write(data)
-            os.remove(old_cache_path)
-            with gzip.open(cache_path, "rb") as f:
-                return (pickle.load(f),)
+                # Verify prompt match
+                if metadata.get("expanded_prompt", "") != prompt:
+                    raise ValueError("Cached prompt mismatch")
+
+                # Reconstruct dictionary
+                prompt_embeds_dict = {
+                    k: v for k, v in loaded.items() if k != "metadata"
+                }
+                return (prompt_embeds_dict,)
+            except Exception as e:
+                log.warning(f"Failed to load cache: {e}, regenerating...")
 
         if text_encoders is None:
             raise ValueError("text_encoders is required if cache is not available.")
@@ -1060,13 +1063,32 @@ class HyVideoTextEncode:
                 "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
             }
 
-        # Save to compressed cache
-        with gzip.open(cache_path, "wb") as f:
-            pickle.dump(prompt_embeds_dict, f)
+       # Prepare metadata with prompts
+        metadata = {
+            "original_prompt": original_prompt,
+            "expanded_prompt": prompt,
+            "seed": str(seed),
+            "prompt_template": prompt_template,
+        }
 
-        # Save prompt to txt file
-        with open(txt_path, "w") as f:
-            f.write(prompt)
+        # Add hyvid_cfg to metadata if present
+        if hyvid_cfg is not None:
+            metadata.update({
+                "hyvid_cfg": json.dumps(hyvid_cfg),
+                "cfg": str(hyvid_cfg.get("cfg", "")),
+                "start_percent": str(hyvid_cfg.get("start_percent", "")),
+                "end_percent": str(hyvid_cfg.get("end_percent", "")),
+            })
+
+        # Save to safetensors with metadata
+        tensors_to_save = prompt_embeds_dict.copy()
+        tensors_to_save["metadata"] = metadata  # Store metadata as separate entry
+        
+        save_torch_file(
+            tensors_to_save,
+            cache_path,
+            metadata=metadata  # Also embed metadata in file header
+        )
 
         return (prompt_embeds_dict,)
 
@@ -1665,7 +1687,7 @@ class HyVideoLoadRandomCachedPrompt:
     CATEGORY = "HunyuanVideoWrapper"
     DISPLAY_NAME = "HyVideo Load Random Cached Prompt"
 
-    CACHE_DIR = os.path.join(script_directory, "cache_encoder")
+    CACHE_DIR = text_embeds_path
 
     def __init__(self):
         os.makedirs(self.CACHE_DIR, exist_ok=True)
@@ -1684,7 +1706,7 @@ class HyVideoLoadRandomCachedPrompt:
         
         for root, dirs, files in os.walk(search_dir):
             for file in files:
-                if file.endswith(".cache.gz") or file.endswith(".cache"):
+                if file.endswith(".safetensors"):
                     rel_path = os.path.relpath(os.path.join(root, file), self.CACHE_DIR)
                     cache_files.append(rel_path)
         
@@ -1693,26 +1715,21 @@ class HyVideoLoadRandomCachedPrompt:
 
         self.selected_cache = random.choice(cache_files)
         cache_path = os.path.join(self.CACHE_DIR, self.selected_cache)
-        txt_path = cache_path.replace(".gz", "").replace(".cache", ".cache.txt")
 
-        if self.selected_cache.endswith(".gz"):
-            with gzip.open(cache_path, "rb") as f:
-                prompt_embeds_dict = pickle.load(f)
-        else:
-            with open(cache_path, "rb") as f:
-                prompt_embeds_dict = pickle.load(f)
+        # Try to load from safetensors cache
+        if os.path.exists(cache_path):
+            try:
+                loaded = load_torch_file(cache_path, safe_load=True)
+                metadata = loaded.get("metadata", {})
 
-            compressed_path = cache_path + ".gz"
-            with gzip.open(compressed_path, "wb") as f:
-                pickle.dump(prompt_embeds_dict, f)
-            os.remove(cache_path)
-            cache_path = compressed_path
-            self.selected_cache += ".gz"
+                # Reconstruct dictionary
+                prompt_embeds_dict = {
+                    k: v for k, v in loaded.items() if k != "metadata"
+                }
 
-        self.prompt_text = ""
-        if os.path.exists(txt_path):
-            with open(txt_path, "r") as f:
-                self.prompt_text = f.read().strip()
+                self.prompt_text = metadata.get("prompt", "");
+            except Exception as e:
+                log.warning(f"Failed to load cache: {e}, regenerating...")
 
         print('Loaded prompt text:', self.prompt_text)
         return (prompt_embeds_dict, self.selected_cache, self.prompt_text)
