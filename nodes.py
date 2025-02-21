@@ -1046,18 +1046,11 @@ class HyVideoTextEncode:
             negative_attention_mask_2 = None
 
         prompt_embeds_dict = {
-                "prompt_embeds": prompt_embeds,
-                "negative_prompt_embeds": negative_prompt_embeds,
-                "attention_mask": attention_mask,
-                "negative_attention_mask": negative_attention_mask,
-                "prompt_embeds_2": prompt_embeds_2,
-                "negative_prompt_embeds_2": negative_prompt_embeds_2,
-                "attention_mask_2": attention_mask_2,
-                "negative_attention_mask_2": negative_attention_mask_2,
-                "cfg": torch.tensor(hyvid_cfg["cfg"]) if hyvid_cfg is not None else None,
-                "start_percent": torch.tensor(hyvid_cfg["start_percent"]) if hyvid_cfg is not None else None,
-                "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
-            }
+            "prompt_embeds": prompt_embeds,
+            "attention_mask": attention_mask,
+            "prompt_embeds_2": prompt_embeds_2,
+            "attention_mask_2": attention_mask_2,
+        }
 
         # Save to safetensors
         data_to_save = {
@@ -1973,7 +1966,7 @@ class HyVideoCompileDynamicPrompt:
             text_encoder_2.to(device)
 
         data_to_save = {
-            "prompt": torch.tensor(prompt),
+            "prompt": prompt,
             "prompt_embeds": {}
         }
 
