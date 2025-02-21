@@ -792,12 +792,11 @@ class HyVideoTextEncode:
                 "custom_prompt_template": ("PROMPT_TEMPLATE", {"default": PROMPT_TEMPLATE["dit-llm-encode-video"], "multiline": True}),
                 "clip_l": ("CLIP", {"tooltip": "Use comfy clip model instead, in this case the text encoder loader's clip_l should be disabled"}),
                 "hyvid_cfg": ("HYVID_CFG", ),
-                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}
             }
         }
 
-    RETURN_TYPES = ("HYVIDEMBEDS", )
-    RETURN_NAMES = ("hyvid_embeds", "prompt", )
+    RETURN_TYPES = ("HYVIDEMBEDS", "STRING")
+    RETURN_NAMES = ("hyvid_embeds", "prompt")
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
 
