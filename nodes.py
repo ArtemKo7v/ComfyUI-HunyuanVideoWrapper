@@ -1875,8 +1875,8 @@ class HyVideoCompileDynamicPrompt:
             }
         }
 
-    RETURN_TYPES = ()
-    RETURN_NAMES = ()
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("status",)
     FUNCTION = "process"
     CATEGORY = "HunyuanVideoWrapper"
     CACHE_DIR = text_embeds_path
@@ -2004,7 +2004,7 @@ class HyVideoCompileDynamicPrompt:
         with gzip.open(file_path, "wb") as f:
             pickle.dump(data_to_save, f)
 
-        return ""
+        return (f"Compiled {i} prompts")
 
 NODE_CLASS_MAPPINGS = {
     "HyVideoSampler": HyVideoSampler,
