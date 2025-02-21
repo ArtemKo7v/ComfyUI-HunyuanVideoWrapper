@@ -873,18 +873,29 @@ class HyVideoTextEncode:
         # Try to load from safetensors cache
         if os.path.exists(cache_path):
             try:
-                loaded = load_torch_file(cache_path, safe_load=True)
-                metadata = loaded.get("metadata", {})
+                loaded_tensors = load_torch_file(cache_path, safe_load=True)
+                # Reconstruct original dictionary with None for missing keys
+                prompt_embeds_dict = {
+                    "prompt_embeds": loaded_tensors.get("prompt_embeds", None),
+                    "negative_prompt_embeds": loaded_tensors.get("negative_prompt_embeds", None),
+                    "attention_mask": loaded_tensors.get("attention_mask", None),
+                    "negative_attention_mask": loaded_tensors.get("negative_attention_mask", None),
+                    "prompt_embeds_2": loaded_tensors.get("prompt_embeds_2", None),
+                    "negative_prompt_embeds_2": loaded_tensors.get("negative_prompt_embeds_2", None),
+                    "attention_mask_2": loaded_tensors.get("attention_mask_2", None),
+                    "negative_attention_mask_2": loaded_tensors.get("negative_attention_mask_2", None),
+                    "cfg": loaded_tensors.get("cfg", None),
+                    "start_percent": loaded_tensors.get("start_percent", None),
+                    "end_percent": loaded_tensors.get("end_percent", None),
+                }
+                metadata = loaded_tensors.get("metadata", {})
+                loaded_prompt = metadata.get("prompt_text", "")
 
                 # Verify prompt match
-                if metadata.get("prompt_text", "") != prompt:
+                if loaded_prompt != prompt:
                     raise ValueError("Cached prompt mismatch")
 
-                # Reconstruct dictionary
-                prompt_embeds_dict = {
-                    k: v for k, v in loaded.items() if k != "metadata"
-                }
-                return (prompt_embeds_dict,)
+                return (prompt_embeds_dict, loaded_prompt)
             except Exception as e:
                 log.warning(f"Failed to load cache: {e}, regenerating...")
 
@@ -1062,32 +1073,19 @@ class HyVideoTextEncode:
                 "end_percent": torch.tensor(hyvid_cfg["end_percent"]) if hyvid_cfg is not None else None,
             }
 
-       # Prepare metadata with prompts
+        # Save to safetensors with metadata
+        tensors_to_save = {}
+        for key, value in prompt_embeds_dict.items():
+            if value is not None:
+                tensors_to_save[key] = value
+        # Prepare metadata with prompts
         metadata = {
             "dynamic_prompt_template": dynamic_prompt_template,
             "prompt_text": prompt,
             "seed": str(seed),
             "prompt_template": prompt_template,
         }
-
-        # Add hyvid_cfg to metadata if present
-        if hyvid_cfg is not None:
-            metadata.update({
-                "hyvid_cfg": json.dumps(hyvid_cfg),
-                "cfg": str(hyvid_cfg.get("cfg", "")),
-                "start_percent": str(hyvid_cfg.get("start_percent", "")),
-                "end_percent": str(hyvid_cfg.get("end_percent", "")),
-            })
-
-        # Save to safetensors with metadata
-        tensors_to_save = prompt_embeds_dict.copy()
-        tensors_to_save["metadata"] = metadata  # Store metadata as separate entry
-        
-        save_torch_file(
-            tensors_to_save,
-            cache_path,
-            metadata=metadata  # Also embed metadata in file header
-        )
+        save_torch_file(tensors_to_save, cache_path, metadata=metadata)
 
         return (prompt_embeds_dict, prompt,)
 
